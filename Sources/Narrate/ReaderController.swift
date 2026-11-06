@@ -5,6 +5,9 @@ import Carbon.HIToolbox
 @MainActor
 final class ReaderController {
     var onStateChange: (() -> Void)?
+    /// Called (at most once per launch) when a read needs Screen Recording permission.
+    var onPermissionNeeded: (() -> Void)?
+    private var reportedPermission = false
 
     private(set) var isSpeaking = false
     private(set) var isPaused = false
@@ -121,7 +124,7 @@ final class ReaderController {
             followTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.followTick() }
             }
-            if let s = NSScreen.containing(lastMouse) { startScan(s) }
+            if ScreenPermission.isGranted, let s = NSScreen.containing(lastMouse) { startScan(s) }
         }
         onStateChange?()
     }
@@ -190,6 +193,11 @@ final class ReaderController {
 
     private func read(at p: CGPoint, fromFollow: Bool) async {
         guard let scr = NSScreen.containing(p) else { return }
+        guard ScreenPermission.isGranted else {
+            if !fromFollow { subtitles.showStatus(CaptureError.permissionDenied.localizedDescription, on: scr, autoHide: 3) }
+            if !reportedPermission { reportedPermission = true; onPermissionNeeded?() }
+            return
+        }
         readToken += 1
         let token = readToken
         let t0 = Date()
@@ -218,7 +226,6 @@ final class ReaderController {
         } catch {
             guard token == readToken else { return }
             subtitles.showStatus(error.localizedDescription, on: scr, autoHide: 4)
-            if case CaptureError.permissionDenied = error { CGRequestScreenCaptureAccess() }
         }
     }
 
@@ -319,7 +326,7 @@ final class ReaderController {
         if hypot(p.x - lastMouse.x, p.y - lastMouse.y) > 3 {
             // Scan as soon as the pointer starts moving, so the result is ready when it stops.
             if !moving || (cache.map { !isFresh($0.time, maxAge: 3) } ?? true) {
-                if let s = NSScreen.containing(p), !(scanStarted > invalidatedAt && Date().timeIntervalSince(scanStarted) < 1) {
+                if ScreenPermission.isGranted, let s = NSScreen.containing(p), !(scanStarted > invalidatedAt && Date().timeIntervalSince(scanStarted) < 1) {
                     startScan(s)
                 }
             }

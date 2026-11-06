@@ -47,9 +47,14 @@ NARRATE_ELEVEN_BASE=http://127.0.0.1:8765 .build/debug/Narrate --selftest-stream
 
 Timings are logged: `log stream --predicate 'subsystem == "com.ash.narrate"'`.
 
-On first launch, allow **Screen Recording** for Narrate, then relaunch. Builds are ad-hoc signed,
-so macOS may ask again after a rebuild. To avoid that, set `NARRATE_SIGN_IDENTITY` to a real
-signing identity.
+On first launch Narrate shows one setup dialog: turn it on under Screen & System Audio Recording,
+then click **Relaunch Narrate**.
+
+**Keep the permission across rebuilds:** macOS ties the permission to the app's signature, and
+ad-hoc signatures change on every build. Create a self-signed certificate once (Keychain Access ▸
+Certificate Assistant ▸ Create a Certificate…, name `Narrate Dev`, type *Code Signing*). The build
+script picks it up automatically. If a stale entry keeps the prompt coming back, run
+`tccutil reset ScreenCapture com.ash.narrate`.
 
 ## How it works
 

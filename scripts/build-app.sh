@@ -1,9 +1,11 @@
 #!/bin/zsh
 # Builds Narrate.app (release) into ./dist. Usage: scripts/build-app.sh [--open]
 #
-# Signing: set NARRATE_SIGN_IDENTITY to a stable code-signing identity so macOS keeps the
-# Screen Recording permission between rebuilds. Without it the app is ad-hoc signed and you
-# may need to re-allow it after each rebuild.
+# Signing: macOS ties Screen Recording permission to the app's signature. Ad-hoc signatures
+# change on every build, so the permission is lost each rebuild. With a stable identity it
+# sticks. The script uses $NARRATE_SIGN_IDENTITY, else a certificate named "Narrate Dev"
+# (Keychain Access ▸ Certificate Assistant ▸ Create a Certificate…, type Code Signing),
+# else ad-hoc.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,8 +35,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign "${NARRATE_SIGN_IDENTITY:--}" "$APP"
-echo "Built $APP"
+IDENTITY="${NARRATE_SIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]] && security find-identity -p codesigning 2>/dev/null | grep -q '"Narrate Dev"'; then
+    IDENTITY="Narrate Dev"
+fi
+codesign --force --sign "${IDENTITY:--}" "$APP"
+echo "Built $APP (signed: ${IDENTITY:-ad-hoc})"
 
 if [[ "${1:-}" == "--open" ]]; then
     pkill -x Narrate 2>/dev/null || true

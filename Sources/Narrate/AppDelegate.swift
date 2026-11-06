@@ -30,7 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.followMouse { reader.setFollow(true) }
         updateIcon()
 
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        reader.onPermissionNeeded = { [weak self] in self?.showPermissionSetup() }
+        if !ScreenPermission.isGranted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showPermissionSetup() }
+        }
         if ElevenLabsSpeaker.isConfigured, settings.elevenVoices.isEmpty { refreshNaturalVoices() }
     }
 
@@ -72,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         voice.submenu = voiceMenu()
         menu.addItem(voice)
 
-        if !CGPreflightScreenCaptureAccess() {
+        if !ScreenPermission.isGranted {
             menu.addItem(.separator())
             menu.addItem(item("⚠︎ Allow Screen Recording…", #selector(openScreenRecordingSettings)))
         }
@@ -225,9 +228,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         open("x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent")
     }
 
-    @objc private func openScreenRecordingSettings() {
-        CGRequestScreenCaptureAccess()
-        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    @objc private func openScreenRecordingSettings() { showPermissionSetup() }
+
+    private var showingPermissionSetup = false
+
+    /// One clear dialog instead of a stream of system prompts.
+    private func showPermissionSetup() {
+        guard !showingPermissionSetup, !ScreenPermission.isGranted else { return }
+        showingPermissionSetup = true
+        defer { showingPermissionSetup = false }
+        ScreenPermission.requestOnce()
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Allow Narrate to see your screen"
+        alert.informativeText = """
+        Narrate reads the text on your screen, on this Mac, so it can speak it and highlight each word.
+
+        1. Click "Open Settings".
+        2. Turn on Narrate under Screen & System Audio Recording. If Narrate is already listed but \
+        on, remove it with − and add it again; an older build is still listed.
+        3. Come back and click "Relaunch Narrate".
+        """
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Relaunch Narrate")
+        alert.addButton(withTitle: "Later")
+        while true {
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                continue
+            case .alertSecondButtonReturn:
+                relaunch()
+                return
+            default:
+                return
+            }
+        }
+    }
+
+    private func relaunch() {
+        let path = Bundle.main.bundlePath
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 0.7; /usr/bin/open \"$0\"", path]
+        try? p.run()
+        NSApp.terminate(nil)
     }
 
     private func open(_ s: String) {

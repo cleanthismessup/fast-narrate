@@ -10,7 +10,7 @@ enum CaptureError: LocalizedError {
         switch self {
         case .noDisplay: return "Couldn't find the display under the pointer."
         case .permissionDenied:
-            return "Narrate needs Screen Recording permission (System Settings ▸ Privacy & Security). Relaunch after allowing it."
+            return "Narrate needs Screen Recording permission. Open the Narrate menu to set it up."
         }
     }
 }
@@ -26,6 +26,7 @@ final class TextCapture {
     }
 
     private func captureImage(of screen: NSScreen) async throws -> CGImage {
+        guard ScreenPermission.isGranted else { throw CaptureError.permissionDenied }
         guard let id = screen.displayID else { throw CaptureError.noDisplay }
         let content: SCShareableContent
         do {
@@ -45,6 +46,22 @@ final class TextCapture {
         config.height = Int(CGFloat(display.height) * scale)
         config.showsCursor = false
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    }
+}
+
+/// Screen Recording permission. macOS only reports a new grant after the app relaunches, and
+/// every ScreenCaptureKit call made without it re-opens the system prompt, so callers must
+/// check `isGranted` first and ask at most once per launch.
+enum ScreenPermission {
+    static var isGranted: Bool { CGPreflightScreenCaptureAccess() }
+
+    private static var asked = false
+
+    /// Registers Narrate in System Settings ▸ Screen Recording (shows the system prompt once).
+    static func requestOnce() {
+        guard !asked, !isGranted else { return }
+        asked = true
+        CGRequestScreenCaptureAccess()
     }
 }
 
