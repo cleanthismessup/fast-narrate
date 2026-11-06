@@ -25,6 +25,32 @@ final class Settings {
         set { d.set(newValue, forKey: "voiceID") }
     }
 
+    enum Engine: String { case apple, natural }
+
+    var engine: Engine {
+        get { Engine(rawValue: d.string(forKey: "engine") ?? "") ?? .apple }
+        set { d.set(newValue.rawValue, forKey: "engine") }
+    }
+
+    var elevenVoiceID: String? {
+        get { d.string(forKey: "elevenVoiceID") }
+        set { d.set(newValue, forKey: "elevenVoiceID") }
+    }
+
+    var elevenModel: String {
+        get { d.string(forKey: "elevenModel") ?? "eleven_flash_v2_5" }
+        set { d.set(newValue, forKey: "elevenModel") }
+    }
+
+    var elevenVoices: [ElevenLabsVoice] {
+        get {
+            guard let data = d.data(forKey: "elevenVoices"),
+                  let v = try? JSONDecoder().decode([ElevenLabsVoice].self, from: data) else { return [] }
+            return v
+        }
+        set { d.set(try? JSONEncoder().encode(newValue), forKey: "elevenVoices") }
+    }
+
     var followMouse: Bool {
         get { d.bool(forKey: "followMouse") }
         set { d.set(newValue, forKey: "followMouse") }

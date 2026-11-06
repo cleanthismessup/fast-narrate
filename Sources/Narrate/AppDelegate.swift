@@ -26,10 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         reader.onStateChange = { [weak self] in self?.updateIcon() }
+        reader.warmUp()
         if settings.followMouse { reader.setFollow(true) }
         updateIcon()
 
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        if ElevenLabsSpeaker.isConfigured, settings.elevenVoices.isEmpty { refreshNaturalVoices() }
     }
 
     private func updateIcon() {
@@ -67,19 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(speed)
 
         let voice = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
-        let voiceMenu = NSMenu()
-        voiceMenu.addItem(item("Auto (best voice for the text's language)", #selector(setVoice(_:)),
-                               on: settings.voiceID == nil))
-        voiceMenu.addItem(.separator())
-        for v in Speaker.menuVoices() {
-            let q = v.quality == .premium ? " · Premium" : v.quality == .enhanced ? " · Enhanced" : ""
-            let i = item("\(v.name) — \(v.language)\(q)", #selector(setVoice(_:)), on: settings.voiceID == v.identifier)
-            i.representedObject = v.identifier
-            voiceMenu.addItem(i)
-        }
-        voiceMenu.addItem(.separator())
-        voiceMenu.addItem(item("Get Better Voices…", #selector(openVoiceSettings)))
-        voice.submenu = voiceMenu
+        voice.submenu = voiceMenu()
         menu.addItem(voice)
 
         if !CGPreflightScreenCaptureAccess() {
@@ -107,7 +97,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleHighlight() { settings.showHighlight.toggle(); reader.refreshAppearance() }
     @objc private func toggleSubtitles() { settings.showSubtitles.toggle(); reader.refreshAppearance() }
     @objc private func setSpeed(_ sender: NSMenuItem) { settings.speed = sender.representedObject as? Double ?? 1 }
-    @objc private func setVoice(_ sender: NSMenuItem) { settings.voiceID = sender.representedObject as? String }
+    @objc private func setVoice(_ sender: NSMenuItem) {
+        settings.engine = .apple
+        settings.voiceID = sender.representedObject as? String
+        reader.preview("This is how the offline voice sounds.")
+    }
+
+    @objc private func setNaturalVoice(_ sender: NSMenuItem) {
+        settings.engine = .natural
+        settings.elevenVoiceID = sender.representedObject as? String
+        reader.preview("Hi! This is how I sound when I read for you.")
+    }
+
+    @objc private func setNaturalModel(_ sender: NSMenuItem) {
+        settings.elevenModel = sender.representedObject as? String ?? settings.elevenModel
+    }
+
+    @objc private func removeNaturalKey() {
+        ElevenLabsSpeaker.apiKey = nil
+        settings.engine = .apple
+        settings.elevenVoices = []
+    }
+
+    @objc private func setUpNaturalVoices() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Natural voices (ElevenLabs)"
+        alert.informativeText = """
+        Paste your ElevenLabs API key. It's stored in your macOS Keychain.
+
+        With natural voices on, the text Narrate reads is sent to ElevenLabs to generate speech \
+        and uses your ElevenLabs character credits. The offline voice is used as a fallback.
+        """
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        field.placeholderString = "ElevenLabs API key"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Get a Key…")
+        alert.window.initialFirstResponder = field
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn {
+            open("https://elevenlabs.io/app/settings/api-keys")
+            return
+        }
+        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard response == .alertFirstButtonReturn, !key.isEmpty else { return }
+        ElevenLabsSpeaker.apiKey = key
+        settings.engine = .natural
+        refreshNaturalVoices(previewWhenDone: true)
+    }
+
+    private func refreshNaturalVoices(previewWhenDone: Bool = false) {
+        guard let key = ElevenLabsSpeaker.apiKey else { return }
+        Task {
+            var voices: [ElevenLabsVoice]
+            do {
+                voices = try await ElevenLabsAPI.voices(apiKey: key)
+            } catch ElevenLabsError.http(401, let msg) where !msg.lowercased().contains("permission") {
+                showError("ElevenLabs rejected that API key.", msg)
+                return
+            } catch {
+                // Keys scoped to text-to-speech only can't list voices; use the stock ones.
+                voices = []
+            }
+            if voices.isEmpty { voices = ElevenLabsAPI.fallbackVoices }
+            settings.elevenVoices = voices
+            if settings.elevenVoiceID == nil || !voices.contains(where: { $0.id == settings.elevenVoiceID }) {
+                settings.elevenVoiceID = voices.first(where: { $0.id == ElevenLabsAPI.fallbackVoices[0].id })?.id
+                    ?? voices.first?.id
+            }
+            if previewWhenDone { reader.preview("Natural voice is ready. Point at any text and press Control Option R.") }
+        }
+    }
+
+    private func showError(_ title: String, _ detail: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = detail
+        a.runModal()
+    }
+
+    private func voiceMenu() -> NSMenu {
+        let m = NSMenu()
+        m.addItem(.sectionHeader(title: "Natural — ElevenLabs"))
+        if ElevenLabsSpeaker.isConfigured {
+            let voices = settings.elevenVoices.isEmpty ? ElevenLabsAPI.fallbackVoices : settings.elevenVoices
+            for v in voices {
+                let on = settings.engine == .natural && settings.elevenVoiceID == v.id
+                let i = item(v.name, #selector(setNaturalVoice(_:)), on: on)
+                i.representedObject = v.id
+                m.addItem(i)
+            }
+            let quality = NSMenuItem(title: "Quality", action: nil, keyEquivalent: "")
+            let qm = NSMenu()
+            for model in ElevenLabsAPI.models {
+                let i = item(model.label, #selector(setNaturalModel(_:)), on: settings.elevenModel == model.id)
+                i.representedObject = model.id
+                qm.addItem(i)
+            }
+            quality.submenu = qm
+            m.addItem(quality)
+            m.addItem(item("Change API Key…", #selector(setUpNaturalVoices)))
+            m.addItem(item("Remove API Key", #selector(removeNaturalKey)))
+        } else {
+            m.addItem(item("Set Up Natural Voices…", #selector(setUpNaturalVoices)))
+        }
+
+        m.addItem(.separator())
+        m.addItem(.sectionHeader(title: "Offline — Apple"))
+        m.addItem(item("Auto (best for the text's language)", #selector(setVoice(_:)),
+                       on: settings.engine == .apple && settings.voiceID == nil))
+        for v in AppleSpeaker.menuVoices() {
+            let q = v.quality == .premium ? " · Premium" : v.quality == .enhanced ? " · Enhanced" : ""
+            let on = settings.engine == .apple && settings.voiceID == v.identifier
+            let i = item("\(v.name) — \(v.language)\(q)", #selector(setVoice(_:)), on: on)
+            i.representedObject = v.identifier
+            m.addItem(i)
+        }
+        m.addItem(item("Download Better Offline Voices…", #selector(openVoiceSettings)))
+        return m
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func openVoiceSettings() {

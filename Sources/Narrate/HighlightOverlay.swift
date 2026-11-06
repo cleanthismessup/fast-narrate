@@ -94,8 +94,8 @@ final class HighlightView: NSView {
         CATransaction.begin()
         // Slide smoothly between words, but jump (no fly-in from 0,0) on the first frame.
         CATransaction.setDisableActions(!hadHighlight)
-        CATransaction.setAnimationDuration(0.12)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        CATransaction.setAnimationDuration(0.06)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
 
         let visibleRects = words.flatMap(\.rects)
         if visibleRects.isEmpty {

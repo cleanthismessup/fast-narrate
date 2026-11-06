@@ -1,10 +1,12 @@
 import AVFoundation
 import NaturalLanguage
 
-/// Text-to-speech with per-word progress callbacks (on the main queue).
-final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
+/// Offline text-to-speech using the system voices, with per-word callbacks.
+@MainActor
+final class AppleSpeaker: NSObject, SpeechEngine, AVSpeechSynthesizerDelegate {
     var onWord: ((Int) -> Void)?
     var onFinish: (() -> Void)?
+    var onError: ((Error) -> Void)?
 
     private let synth = AVSpeechSynthesizer()
     private var current: AVSpeechUtterance?
@@ -15,7 +17,15 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         synth.delegate = self
     }
 
-    func speak(_ words: [String], speed: Double, voiceID: String?) {
+    /// Loads the voice so the first real sentence starts without a delay.
+    func warmUp() {
+        let u = AVSpeechUtterance(string: " ")
+        u.volume = 0
+        u.voice = Self.voice(for: "Hello", preferredID: Settings.shared.voiceID)
+        synth.speak(u)
+    }
+
+    func speak(_ words: [String], speed: Double) {
         stop()
         var text = ""
         ranges = []
@@ -26,50 +36,56 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             ranges.append(NSRange(location: loc, length: (w as NSString).length))
         }
         let u = AVSpeechUtterance(string: text)
-        u.voice = Self.voice(for: text, preferredID: voiceID)
+        u.voice = Self.voice(for: text, preferredID: Settings.shared.voiceID)
         u.rate = Self.rate(for: speed)
+        u.preUtteranceDelay = 0
         current = u
         synth.speak(u)
     }
+
+    func prefetch(_ words: [String]) {}
 
     func stop() {
         current = nil
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
     }
 
-    func pause() { synth.pauseSpeaking(at: .word) }
+    func pause() { synth.pauseSpeaking(at: .immediate) }
     func resume() { synth.continueSpeaking() }
 
-    // MARK: Delegate
+    // MARK: Delegate (called on an arbitrary queue)
 
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, willSpeakRangeOfSpeechString r: NSRange,
-                           utterance: AVSpeechUtterance) {
-        guard utterance === current else { return }
-        let idx = ranges.lastIndex { $0.location <= r.location } ?? 0
-        DispatchQueue.main.async { [weak self] in
-            guard let self, utterance === self.current else { return }
-            self.onWord?(idx)
+    nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, willSpeakRangeOfSpeechString r: NSRange,
+                                       utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                guard utterance === self.current else { return }
+                let idx = self.ranges.lastIndex { $0.location <= r.location } ?? 0
+                self.onWord?(idx)
+            }
         }
     }
 
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, utterance === self.current else { return }
-            self.current = nil
-            self.onFinish?()
+    nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                guard utterance === self.current else { return }
+                self.current = nil
+                self.onFinish?()
+            }
         }
     }
 
     // MARK: Voices
 
     /// AVSpeech rate is non-linear; this maps a "1.5×"-style multiplier to something that feels right.
-    static func rate(for speed: Double) -> Float {
+    nonisolated static func rate(for speed: Double) -> Float {
         let r = Double(AVSpeechUtteranceDefaultSpeechRate) + (speed - 1) * 0.16
         return Float(min(max(r, 0.35), 0.75))
     }
 
     /// The user's chosen voice, or the highest-quality voice for the text's detected language.
-    static func voice(for text: String, preferredID: String?) -> AVSpeechSynthesisVoice? {
+    nonisolated static func voice(for text: String, preferredID: String?) -> AVSpeechSynthesisVoice? {
         if let id = preferredID, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
@@ -87,12 +103,10 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     /// Voices worth offering in the menu: enhanced/premium ones first.
-    static func menuVoices() -> [AVSpeechSynthesisVoice] {
+    nonisolated static func menuVoices() -> [AVSpeechSynthesisVoice] {
         let all = AVSpeechSynthesisVoice.speechVoices().filter { !$0.voiceTraits.contains(.isNoveltyVoice) }
-        let good = all.filter { $0.quality != .default }
-        let pool = good.isEmpty
-            ? all.filter { $0.language.hasPrefix(String((Locale.preferredLanguages.first ?? "en").prefix(2))) }
-            : good
-        return pool.sorted { ($0.language, $0.name) < ($1.language, $1.name) }
+        let lang = String((Locale.preferredLanguages.first ?? "en").prefix(2))
+        let pool = all.filter { $0.quality != .default || $0.language.hasPrefix(lang) }
+        return pool.sorted { ($0.quality.rawValue, $0.language, $0.name) > ($1.quality.rawValue, $1.language, $1.name) }
     }
 }

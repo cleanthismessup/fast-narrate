@@ -105,6 +105,25 @@ enum OCR {
         return out
     }
 
+    /// Vision compiles its model for each image size the first time it sees it (~30s on first
+    /// launch). Run a throwaway recognition at each display's pixel size so real reads are fast.
+    static func warmUp(pixelSize: CGSize) {
+        let w = Int(pixelSize.width), h = Int(pixelSize.height)
+        guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                                space: CGColorSpaceCreateDeviceRGB(),
+                                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        ("Warming up text recognition for Narrate." as NSString).draw(
+            at: CGPoint(x: 80, y: h / 2),
+            withAttributes: [.font: NSFont.systemFont(ofSize: 40), .foregroundColor: NSColor.black])
+        NSGraphicsContext.restoreGraphicsState()
+        guard let image = ctx.makeImage() else { return }
+        _ = try? lines(in: image, mappedTo: CGRect(x: 0, y: 0, width: w, height: h))
+    }
+
     /// Whitespace-separated tokens (punctuation kept, so speech still pauses at commas/periods).
     static func tokenRanges(in s: String) -> [Range<String.Index>] {
         var out: [Range<String.Index>] = []
