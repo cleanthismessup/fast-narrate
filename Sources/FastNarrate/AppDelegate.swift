@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Carbon.HIToolbox
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -25,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.reader.setFollow(!self.reader.isFollowing)
         }
 
+        HotKeys.shared.register(HotKeyID.feedback.rawValue, keyCode: kVK_ANSI_S, modifiers: ctrlOpt) { [weak self] in
+            self?.sendFeedback()
+        }
+
         reader.onStateChange = { [weak self] in self?.updateIcon() }
         reader.warmUp()
         if settings.followMouse { reader.setFollow(true) }
@@ -40,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateIcon() {
         let symbol = reader.isSpeaking ? (reader.isPaused ? "pause.circle" : "waveform")
             : reader.isFollowing ? "cursorarrow.rays" : "text.viewfinder"
-        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Narrate")
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Fast Narrate")
     }
 
     // MARK: Menu
@@ -57,14 +62,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(item("Follow Mouse", #selector(toggleFollow), key: "f", on: reader.isFollowing))
         menu.addItem(item("Continue to Next Paragraph", #selector(toggleContinue), on: settings.continueReading))
-        menu.addItem(item("Highlight Words on Screen", #selector(toggleHighlight), on: settings.showHighlight))
-        menu.addItem(item("Show Subtitles", #selector(toggleSubtitles), on: settings.showSubtitles))
+        let appearance = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        appearance.submenu = appearanceMenu()
+        menu.addItem(appearance)
         menu.addItem(.separator())
 
-        let speed = NSMenuItem(title: "Speed", action: nil, keyEquivalent: "")
+        let silentMode = settings.engine == .silent
+        let speed = NSMenuItem(title: silentMode ? "Pace" : "Speed", action: nil, keyEquivalent: "")
         let speedMenu = NSMenu()
-        for s in [0.8, 1.0, 1.25, 1.5, 1.75, 2.0] {
-            let i = item(String(format: "%g×", s), #selector(setSpeed(_:)), on: abs(settings.speed - s) < 0.01)
+        for s in [0.8, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0] {
+            let wpm = silentMode ? String(format: "  (%d wpm)", Int(SilentPacer.baseWPM * s)) : ""
+            let i = item(String(format: "%g×", s) + wpm, #selector(setSpeed(_:)), on: abs(settings.speed - s) < 0.01)
             i.representedObject = s
             speedMenu.addItem(i)
         }
@@ -81,7 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(item("Quit Narrate", #selector(quit), key: "q", plainKey: true))
+        menu.addItem(item("Send UI Feedback…", #selector(sendFeedback), key: "s"))
+        menu.addItem(item("Open Feedback Folder", #selector(openFeedbackFolder)))
+        menu.addItem(.separator())
+        menu.addItem(item("Quit Fast Narrate", #selector(quit), key: "q", plainKey: true))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "", on: Bool? = nil,
@@ -129,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = """
         Paste your ElevenLabs API key. It's stored in your macOS Keychain.
 
-        With natural voices on, the text Narrate reads is sent to ElevenLabs to generate speech \
+        With natural voices on, the text Fast Narrate reads is sent to ElevenLabs to generate speech \
         and uses your ElevenLabs character credits. The offline voice is used as a fallback.
         """
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
@@ -182,8 +193,182 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.runModal()
     }
 
+    private func appearanceMenu() -> NSMenu {
+        let m = NSMenu()
+        m.addItem(item("Highlight Words on Screen", #selector(toggleHighlight), on: settings.showHighlight))
+        m.addItem(item("Paragraph Outline", #selector(toggleOutline), on: settings.showParagraphOutline))
+        m.addItem(item("Show Subtitles", #selector(toggleSubtitles), on: settings.showSubtitles))
+
+        m.addItem(.sectionHeader(title: "Highlight Style"))
+        for s in Settings.HighlightStyle.allCases {
+            let i = item(s.label, #selector(setHighlightStyle(_:)), on: settings.highlightStyle == s)
+            i.representedObject = s.rawValue
+            m.addItem(i)
+        }
+        m.addItem(.sectionHeader(title: "Color"))
+        for c in Settings.HighlightColor.allCases {
+            let i = item(c.label, #selector(setHighlightColor(_:)), on: settings.highlightColor == c)
+            i.representedObject = c.rawValue
+            i.image = swatch(c.color)
+            m.addItem(i)
+        }
+        m.addItem(.sectionHeader(title: "Subtitles"))
+        for s in Settings.SubtitleSize.allCases {
+            let i = item(s.label, #selector(setSubtitleSize(_:)), on: settings.subtitleSize == s)
+            i.representedObject = s.rawValue
+            m.addItem(i)
+        }
+        for p in Settings.SubtitlePosition.allCases {
+            let i = item("At \(p.label)", #selector(setSubtitlePosition(_:)), on: settings.subtitlePosition == p)
+            i.representedObject = p.rawValue
+            m.addItem(i)
+        }
+        return m
+    }
+
+    private func swatch(_ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
+            color.setFill()
+            NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+    }
+
+    @objc private func toggleOutline() { settings.showParagraphOutline.toggle(); reader.refreshAppearance() }
+    @objc private func setHighlightStyle(_ s: NSMenuItem) {
+        settings.highlightStyle = Settings.HighlightStyle(rawValue: s.representedObject as? String ?? "") ?? .marker
+        reader.refreshAppearance()
+    }
+    @objc private func setHighlightColor(_ s: NSMenuItem) {
+        settings.highlightColor = Settings.HighlightColor(rawValue: s.representedObject as? String ?? "") ?? .yellow
+        reader.refreshAppearance()
+    }
+    @objc private func setSubtitleSize(_ s: NSMenuItem) {
+        settings.subtitleSize = Settings.SubtitleSize(rawValue: s.representedObject as? String ?? "") ?? .medium
+        reader.refreshAppearance()
+    }
+    @objc private func setSubtitlePosition(_ s: NSMenuItem) {
+        settings.subtitlePosition = Settings.SubtitlePosition(rawValue: s.representedObject as? String ?? "") ?? .bottom
+        reader.refreshAppearance()
+    }
+    @objc private func setSilent() {
+        settings.engine = .silent
+        reader.preview("Silent mode: words light up at your reading pace, with no sound at all.")
+    }
+
+    // MARK: UI feedback snapshots
+
+    private var sendingFeedback = false
+
+    /// Freezes reading, screenshots the screen *with* the overlay and captions, asks for a note,
+    /// and saves screenshot + zoomed crop + report.md into the feedback folder.
+    @objc private func sendFeedback() {
+        guard !sendingFeedback else { return }
+        sendingFeedback = true
+        let paused = reader.pauseForSnapshot()
+        let focus = reader.focusRect
+        let state = reader.stateReport()
+        Task {
+            defer { sendingFeedback = false }
+            var shot: (image: CGImage, screen: NSScreen)?
+            var captureError: String?
+            do { shot = try await reader.captureForFeedback() } catch { captureError = error.localizedDescription }
+
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Send UI feedback"
+            alert.informativeText = shot == nil
+                ? "Couldn't take a screenshot (\(captureError ?? "unknown")). Your note will still be saved."
+                : "The screenshot (with the highlight and subtitles) is taken. What looks wrong or could be better?"
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 120))
+            let text = NSTextView(frame: scroll.bounds)
+            text.font = .systemFont(ofSize: 13)
+            text.isRichText = false
+            text.autoresizingMask = [.width]
+            scroll.documentView = text
+            scroll.hasVerticalScroller = true
+            scroll.borderType = .bezelBorder
+            alert.accessoryView = scroll
+            alert.window.initialFirstResponder = text
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            let saved = alert.runModal() == .alertFirstButtonReturn
+            if saved {
+                do {
+                    let folder = try saveFeedback(note: text.string, state: state, shot: shot, focus: focus)
+                    Log.info("feedback saved: \(folder.path)")
+                } catch {
+                    showError("Couldn't save feedback", error.localizedDescription)
+                }
+            }
+            if paused { reader.togglePause() }
+        }
+    }
+
+    private func saveFeedback(note: String, state: String, shot: (image: CGImage, screen: NSScreen)?,
+                              focus: CGRect?) throws -> URL {
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let name = stamp.string(from: Date())
+        let dir = settings.feedbackFolder.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var images: [String] = []
+        if let shot {
+            try writePNG(shot.image, to: dir.appendingPathComponent("screen.png"))
+            images.append("screen.png")
+            if let focus, let crop = crop(shot.image, to: focus.insetBy(dx: -120, dy: -90), on: shot.screen) {
+                try writePNG(crop, to: dir.appendingPathComponent("zoom.png"))
+                images.append("zoom.png")
+            }
+        }
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let s = settings
+        var md = "# UI feedback \(name)\n\n"
+        md += "## Note\n\n\(note.isEmpty ? "_(no note)_" : note)\n\n"
+        md += "## Screenshots\n\n" + (images.isEmpty ? "_(none)_\n" : images.map { "![\($0)](\($0))\n" }.joined()) + "\n"
+        md += "## Settings\n\n"
+        md += "- Version: \(version), macOS \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
+        md += "- Voice: \(s.engine.rawValue), speed \(s.speed)×\n"
+        md += "- Highlight: \(s.showHighlight ? s.highlightStyle.rawValue : "off"), color \(s.highlightColor.rawValue), paragraph outline \(s.showParagraphOutline)\n"
+        md += "- Subtitles: \(s.showSubtitles ? "\(s.subtitleSize.rawValue), \(s.subtitlePosition.rawValue)" : "off")\n"
+        if let scr = shot?.screen {
+            md += "- Screen: \(Int(scr.frame.width))×\(Int(scr.frame.height)) pt @\(Int(scr.backingScaleFactor))x\n"
+        }
+        md += "\n## Reading state\n\n\(state)"
+        try md.write(to: dir.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
+        return dir
+    }
+
+    /// Crops a global-coordinate rect (Cocoa, bottom-left origin) out of a screenshot of `screen`.
+    private func crop(_ image: CGImage, to rect: CGRect, on screen: NSScreen) -> CGImage? {
+        let f = screen.frame
+        let scale = CGFloat(image.width) / f.width
+        let r = rect.intersection(f)
+        guard !r.isNull else { return nil }
+        let px = CGRect(x: (r.minX - f.minX) * scale, y: (f.maxY - r.maxY) * scale,
+                        width: r.width * scale, height: r.height * scale)
+        return image.cropping(to: px.integral)
+    }
+
+    private func writePNG(_ image: CGImage, to url: URL) throws {
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    @objc private func openFeedbackFolder() {
+        try? FileManager.default.createDirectory(at: settings.feedbackFolder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(settings.feedbackFolder)
+    }
+
     private func voiceMenu() -> NSMenu {
         let m = NSMenu()
+        m.addItem(.sectionHeader(title: "Silent"))
+        m.addItem(item("Highlight Only — No Sound", #selector(setSilent), on: settings.engine == .silent))
+        m.addItem(.separator())
         m.addItem(.sectionHeader(title: "Natural — ElevenLabs"))
         if ElevenLabsSpeaker.isConfigured {
             let voices = settings.elevenVoices.isEmpty ? ElevenLabsAPI.fallbackVoices : settings.elevenVoices
@@ -240,17 +425,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ScreenPermission.requestOnce()
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Allow Narrate to see your screen"
+        alert.messageText = "Allow Fast Narrate to see your screen"
         alert.informativeText = """
-        Narrate reads the text on your screen, on this Mac, so it can speak it and highlight each word.
+        Fast Narrate reads the text on your screen, on this Mac, so it can speak it and highlight each word.
 
         1. Click "Open Settings".
-        2. Turn on Narrate under Screen & System Audio Recording. If Narrate is already listed but \
+        2. Turn on Fast Narrate under Screen & System Audio Recording. If Fast Narrate is already listed but \
         on, remove it with − and add it again; an older build is still listed.
-        3. Come back and click "Relaunch Narrate".
+        3. Come back and click "Relaunch Fast Narrate".
         """
         alert.addButton(withTitle: "Open Settings")
-        alert.addButton(withTitle: "Relaunch Narrate")
+        alert.addButton(withTitle: "Relaunch Fast Narrate")
         alert.addButton(withTitle: "Later")
         while true {
             switch alert.runModal() {

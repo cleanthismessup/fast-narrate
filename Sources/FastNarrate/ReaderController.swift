@@ -17,6 +17,7 @@ final class ReaderController {
     private let capture = TextCapture()
     private let apple = AppleSpeaker()
     private let natural = ElevenLabsSpeaker()
+    private let silent = SilentPacer()
     private lazy var engine: SpeechEngine = apple
     private let overlay = HighlightOverlay()
     private let subtitles = SubtitleBar()
@@ -54,7 +55,7 @@ final class ReaderController {
     private static let dwell: TimeInterval = 0.3
 
     init() {
-        for e in [apple, natural] as [SpeechEngine] {
+        for e in [apple, natural, silent] as [SpeechEngine] {
             e.onWord = { [weak self] i in self?.spoke(i) }
             e.onFinish = { [weak self] in self?.finishedBlock() }
             e.onError = { [weak self] err in self?.speechFailed(err) }
@@ -150,6 +151,51 @@ final class ReaderController {
         onStateChange?()
     }
 
+    // MARK: Feedback snapshots
+
+    /// Pauses reading so a snapshot shows a frozen frame. Returns true if it paused.
+    func pauseForSnapshot() -> Bool {
+        guard isSpeaking, !isPaused else { return false }
+        togglePause()
+        return true
+    }
+
+    /// Screenshot of the display under the pointer (or being read), including our overlay and captions.
+    func captureForFeedback() async throws -> (image: CGImage, screen: NSScreen) {
+        guard let scr = screen.flatMap({ s in isSpeaking ? s : nil }) ?? NSScreen.containing(NSEvent.mouseLocation)
+        else { throw CaptureError.noDisplay }
+        overlay.setCapturable(true)
+        subtitles.setCapturable(true)
+        defer {
+            overlay.setCapturable(false)
+            subtitles.setCapturable(false)
+        }
+        try await Task.sleep(nanoseconds: 120_000_000) // let the window server apply the change
+        return (try await capture.captureImage(of: scr, includeOwnWindows: true), scr)
+    }
+
+    /// The area worth zooming into: the paragraph being read.
+    var focusRect: CGRect? {
+        let r = words.flatMap(\.rects)
+        return isSpeaking && !r.isEmpty ? r.reduce(CGRect.null) { $0.union($1) } : nil
+    }
+
+    /// Markdown describing what Fast Narrate was doing, for the feedback report.
+    func stateReport() -> String {
+        var out = "- Reading: \(isSpeaking ? (isPaused ? "paused" : "yes") : "no")\n"
+        out += "- Follow mouse: \(isFollowing)\n"
+        out += "- Engine: \(isSpeaking ? String(describing: type(of: engine)) : settings.engine.rawValue)\n"
+        out += "- Highlight suspended (scrolling): \(highlightSuspended)\n"
+        if isSpeaking, words.indices.contains(currentIndex) {
+            let w = words[currentIndex]
+            out += "- Current word: `\(w.text)` (#\(currentIndex) of \(words.count)), rects: \(w.rects.map { "\($0.integral)" })\n"
+            out += "- Paragraph \(blockIndex + 1) of \(blocks.count), rect: \(focusRect.map { "\($0.integral)" } ?? "none")\n\n"
+            let marked = words.enumerated().map { $0.offset == currentIndex ? "**[\($0.element.text)]**" : $0.element.text }
+            out += "Paragraph text (current word in brackets):\n\n> \(marked.joined(separator: " "))\n"
+        }
+        return out
+    }
+
     // MARK: Scanning
 
     private func invalidate() {
@@ -230,7 +276,8 @@ final class ReaderController {
     }
 
     private func pickEngine() -> SpeechEngine {
-        settings.engine == .natural && ElevenLabsSpeaker.isConfigured && !naturalFailed ? natural : apple
+        if settings.engine == .silent { return silent }
+        return settings.engine == .natural && ElevenLabsSpeaker.isConfigured && !naturalFailed ? natural : apple
     }
 
     private func begin(block b: Int, at w: Int) {

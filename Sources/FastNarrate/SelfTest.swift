@@ -5,7 +5,7 @@ import AppKit
 enum SelfTest {
     static func run() -> Int32 {
         let size = CGSize(width: 1400, height: 760)
-        let p1 = "Reading on screen takes time. Narrate reads any text under your pointer aloud, highlighting each word as it is spoken, like subtitles that follow along."
+        let p1 = "Reading on screen takes time. Fast Narrate reads any text under your pointer aloud, highlighting each word as it is spoken, like subtitles that follow along."
         let p2 = "A second paragraph lives down here, separated by some space, so the layout analysis should treat it as its own block of text."
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.white.setFill()

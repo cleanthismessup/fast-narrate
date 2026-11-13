@@ -10,7 +10,7 @@ enum CaptureError: LocalizedError {
         switch self {
         case .noDisplay: return "Couldn't find the display under the pointer."
         case .permissionDenied:
-            return "Narrate needs Screen Recording permission. Open the Narrate menu to set it up."
+            return "Fast Narrate needs Screen Recording permission. Open the Fast Narrate menu to set it up."
         }
     }
 }
@@ -25,7 +25,8 @@ final class TextCapture {
         }.value
     }
 
-    private func captureImage(of screen: NSScreen) async throws -> CGImage {
+    /// `includeOwnWindows` is for feedback snapshots: normally our overlay must stay out of OCR.
+    func captureImage(of screen: NSScreen, includeOwnWindows: Bool = false) async throws -> CGImage {
         guard ScreenPermission.isGranted else { throw CaptureError.permissionDenied }
         guard let id = screen.displayID else { throw CaptureError.noDisplay }
         let content: SCShareableContent
@@ -38,7 +39,7 @@ final class TextCapture {
             throw CaptureError.noDisplay
         }
         let pid = ProcessInfo.processInfo.processIdentifier
-        let mine = content.applications.filter { $0.processID == pid }
+        let mine = includeOwnWindows ? [] : content.applications.filter { $0.processID == pid }
         let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
         let config = SCStreamConfiguration()
         let scale = screen.backingScaleFactor
@@ -133,7 +134,7 @@ enum OCR {
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-        ("Warming up text recognition for Narrate." as NSString).draw(
+        ("Warming up text recognition." as NSString).draw(
             at: CGPoint(x: 80, y: h / 2),
             withAttributes: [.font: NSFont.systemFont(ofSize: 40), .foregroundColor: NSColor.black])
         NSGraphicsContext.restoreGraphicsState()

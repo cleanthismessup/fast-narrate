@@ -1,4 +1,4 @@
-"""Fake ElevenLabs /stream/with-timestamps server for Narrate's --selftest-stream.
+"""Fake ElevenLabs /stream/with-timestamps server for Fast Narrate's --selftest-stream.
 Each word gets 0.25s; audio is silence, sent as 3 chunks of 0.5s with chunk-relative timings."""
 import base64, json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer

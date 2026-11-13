@@ -7,9 +7,12 @@ final class SubtitleBar {
     private let label = NSTextField(labelWithString: "")
     private var hideWork: DispatchWorkItem?
 
-    private let highlight = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.04, alpha: 1)
-    private lazy var captionFont: NSFont = Self.rounded(size: 30, weight: .heavy)
-    private lazy var statusFont: NSFont = Self.rounded(size: 20, weight: .semibold)
+    private var highlight: NSColor { Settings.shared.highlightColor.color }
+    private var captionFont: NSFont { Self.rounded(size: Settings.shared.subtitleSize.points, weight: .heavy) }
+    private var statusFont: NSFont { Self.rounded(size: 20, weight: .semibold) }
+
+    /// Lets a feedback snapshot include the caption bar.
+    func setCapturable(_ on: Bool) { panel?.sharingType = on ? .readOnly : .none }
 
     /// Words per caption, broken early at punctuation, so the eye takes in a short chunk at a time.
     nonisolated static func groups(_ words: [String], maxWords: Int = 6) -> [Range<Int>] {
@@ -76,8 +79,11 @@ final class SubtitleBar {
         label.attributedStringValue = text
         if let s = screen ?? NSScreen.main {
             let vf = s.visibleFrame
-            let w = min(900, vf.width - 80)
-            let frame = NSRect(x: vf.midX - w / 2, y: vf.minY + 36, width: w, height: 120)
+            let size = Settings.shared.subtitleSize.points
+            let w = min(size * 30, vf.width - 80)
+            let h = size * 2.6 + 34
+            let y = Settings.shared.subtitlePosition == .bottom ? vf.minY + 36 : vf.maxY - h - 24
+            let frame = NSRect(x: vf.midX - w / 2, y: y, width: w, height: h)
             if p.frame != frame { p.setFrame(frame, display: true) }
         }
         p.orderFrontRegardless()

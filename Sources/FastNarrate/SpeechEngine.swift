@@ -18,7 +18,7 @@ protocol SpeechEngine: AnyObject {
 }
 
 enum Log {
-    private static let logger = Logger(subsystem: "com.ash.narrate", category: "perf")
+    private static let logger = Logger(subsystem: "io.github.cleanthismessup.fastnarrate", category: "perf")
 
     static func timing(_ what: String, since start: Date) {
         let ms = Int(Date().timeIntervalSince(start) * 1000)

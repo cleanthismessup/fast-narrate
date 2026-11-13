@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Narrate",
+    name: "FastNarrate",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "Narrate",
-            path: "Sources/Narrate",
+            name: "FastNarrate",
+            path: "Sources/FastNarrate",
             linkerSettings: [
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Vision"),

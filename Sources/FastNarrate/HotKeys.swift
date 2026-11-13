@@ -42,7 +42,7 @@ final class HotKeys {
 }
 
 enum HotKeyID: UInt32 {
-    case read = 1, pause, follow, escape
+    case read = 1, pause, follow, escape, feedback
 }
 
 let ctrlOpt = controlKey | optionKey
