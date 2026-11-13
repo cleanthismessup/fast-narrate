@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !ScreenPermission.isGranted {
             menu.addItem(.separator())
             menu.addItem(item("⚠︎ Allow Screen Recording…", #selector(openScreenRecordingSettings)))
+            menu.addItem(item("Relaunch Fast Narrate", #selector(relaunchFromMenu)))
         }
 
         menu.addItem(.separator())
@@ -413,15 +414,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         open("x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent")
     }
 
-    @objc private func openScreenRecordingSettings() { showPermissionSetup() }
+    @objc private func openScreenRecordingSettings() { showPermissionSetup(force: true) }
+    @objc private func relaunchFromMenu() { relaunch() }
 
-    private var showingPermissionSetup = false
+    private var shownPermissionSetup = false
+    private var permissionPoll: Timer?
 
-    /// One clear dialog instead of a stream of system prompts.
-    private func showPermissionSetup() {
-        guard !showingPermissionSetup, !ScreenPermission.isGranted else { return }
-        showingPermissionSetup = true
-        defer { showingPermissionSetup = false }
+    /// Shown once per launch (or when picked from the menu). It never re-opens itself: after
+    /// "Open Settings" it gets out of the way so the switch in System Settings can be used.
+    private func showPermissionSetup(force: Bool = false) {
+        guard !ScreenPermission.isGranted, force || !shownPermissionSetup else { return }
+        shownPermissionSetup = true
         ScreenPermission.requestOnce()
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -430,23 +433,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Fast Narrate reads the text on your screen, on this Mac, so it can speak it and highlight each word.
 
         1. Click "Open Settings".
-        2. Turn on Fast Narrate under Screen & System Audio Recording. If Fast Narrate is already listed but \
-        on, remove it with − and add it again; an older build is still listed.
-        3. Come back and click "Relaunch Fast Narrate".
+        2. Turn on Fast Narrate under Screen & System Audio Recording.
+        3. Click the Fast Narrate icon in the menu bar and choose "Relaunch Fast Narrate".
         """
         alert.addButton(withTitle: "Open Settings")
-        alert.addButton(withTitle: "Relaunch Fast Narrate")
         alert.addButton(withTitle: "Later")
-        while true {
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-                continue
-            case .alertSecondButtonReturn:
-                relaunch()
-                return
-            default:
-                return
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        // If macOS reports the grant without a relaunch, relaunch for the user.
+        permissionPoll?.invalidate()
+        permissionPoll = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard ScreenPermission.isGranted else { return }
+                t.invalidate()
+                self?.relaunch()
             }
         }
     }
