@@ -122,8 +122,15 @@ public enum Layout {
     /// Full pipeline: rows → blocks → reading order → flat word list,
     /// re-joining words hyphenated across a line break.
     public static func readingWords(_ lines: [OCRLine]) -> [OCRWord] {
+        readingWordsWithBlocks(lines).words
+    }
+
+    /// Like `readingWords`, plus the index where each block (paragraph) starts.
+    public static func readingWordsWithBlocks(_ lines: [OCRLine]) -> (words: [OCRWord], blockStarts: [Int]) {
         var out: [OCRWord] = []
+        var starts: [Int] = []
         for block in orderedBlocks(blocks(mergeRows(lines))) {
+            starts.append(out.count)
             var pendingHyphen = false
             for line in block {
                 let words = line.words.sorted { $0.rect.minX < $1.rect.minX }
@@ -143,7 +150,12 @@ public enum Layout {
                 }
             }
         }
-        return out
+        return (out, starts)
+    }
+
+    /// Index of the first word of the block (paragraph) containing word `i`.
+    public static func blockStart(of i: Int, blockStarts: [Int]) -> Int {
+        blockStarts.last { $0 <= i } ?? i
     }
 
     /// Index of the word under (or nearest to) the pointer.

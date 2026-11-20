@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import FastNarrateCore
 
 /// Inverts whatever is on screen behind it (window-server backdrop, like vibrancy uses).
@@ -15,10 +16,55 @@ enum InvertLayer {
     }
 }
 
+extension HighlightStyle {
+    /// Styles whose box fades out softly at its edges instead of ending on a hard line.
+    var feathered: Bool { self == .invert || self == .marker || self == .focus }
+}
+
+/// Soft-edged mask: opaque in the middle, fading to clear over `feather` points at the edges.
+/// Stretched with a 9-slice centre, so one small image fits any box size.
+enum FeatherMask {
+    static let feather: CGFloat = 8
+    /// How far the box grows outward so its text stays fully visible inside the fade.
+    static let outset: CGFloat = 4
+
+    static let image: CGImage? = {
+        let scale: CGFloat = 2
+        let size = (feather * 2 + 4) * scale
+        let fill = CGRect(x: 0, y: 0, width: size, height: size).insetBy(dx: feather / 2 * scale, dy: feather / 2 * scale)
+        guard let ctx = CGContext(data: nil, width: Int(size), height: Int(size), bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        ctx.setFillColor(gray: 0, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.addPath(CGPath(roundedRect: fill, cornerWidth: 4 * scale, cornerHeight: 4 * scale, transform: nil))
+        ctx.fillPath()
+        guard let sharp = ctx.makeImage() else { return nil }
+        let blurred = CIImage(cgImage: sharp).clampedToExtent()
+            .applyingGaussianBlur(sigma: Double(feather * scale / 4))
+            .cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
+        // Luminance → alpha, so it can be used as a layer mask.
+        let alpha = blurred.applyingFilter("CIMaskToAlpha")
+        return CIContext(options: [.useSoftwareRenderer: false]).createCGImage(alpha, from: alpha.extent)
+    }()
+
+    static func makeLayer() -> CALayer {
+        let l = CALayer()
+        l.contents = image
+        l.contentsScale = 2
+        let size = feather * 2 + 4
+        l.contentsCenter = CGRect(x: (size / 2 - 1) / size, y: (size / 2 - 1) / size, width: 2 / size, height: 2 / size)
+        l.actions = HighlightRenderer.noActions
+        return l
+    }
+}
+
 /// One highlight box: an optional invert backdrop plus a styled frame layer.
 private final class BoxLayer: CALayer {
     let invert = InvertLayer.make()
     let deco = CALayer()
+    private let feather = FeatherMask.makeLayer()
+    private var feathered = false
 
     override init() {
         super.init()
@@ -33,6 +79,9 @@ private final class BoxLayer: CALayer {
     required init?(coder: NSCoder) { fatalError() }
 
     func apply(style: HighlightStyle) {
+        feathered = style.feathered && FeatherMask.image != nil
+        mask = feathered ? feather : nil
+        masksToBounds = !feathered
         let inv = style == .invert && invert != nil
         invert?.isHidden = !inv
         deco.borderWidth = 0
@@ -66,6 +115,7 @@ private final class BoxLayer: CALayer {
     }
 
     func layout(style: HighlightStyle) {
+        if feathered { feather.frame = bounds }
         invert?.frame = bounds
         deco.frame = style == .underline
             ? CGRect(x: 0, y: 0, width: bounds.width, height: 3.5)
@@ -179,7 +229,7 @@ final class HighlightRenderer {
         dim.isHidden = style != .focus
         mark.frame = style == .underline
             ? CGRect(x: b.minX, y: b.minY - 3, width: b.width, height: 3.5)
-            : b
+            : style.feathered ? b.insetBy(dx: -FeatherMask.outset, dy: -FeatherMask.outset) : b
         mark.layout(style: style)
         if style == .focus {
             let h = hole.value.insetBy(dx: -12, dy: -7)

@@ -125,7 +125,7 @@ enum OCRLocator {
     /// starting a little above the pointer (reading goes down).
     static func tileRect(around p: CGPoint, in f: CGRect) -> CGRect {
         let h = min(900, f.height)
-        var top = min(f.maxY, p.y + 150)
+        var top = min(f.maxY, p.y + 400)   // room above for the start of the paragraph
         var bottom = top - h
         if bottom < f.minY { bottom = f.minY; top = bottom + h }
         return CGRect(x: f.minX, y: bottom, width: f.width, height: h)
@@ -141,8 +141,9 @@ enum OCRLocator {
                                               keepBottomEdge: tile.minY <= screen.frame.minY + 1)
         let t2 = CACurrentMediaTime()
         perfLog.info("OCR capture \(Int((t1 - t0) * 1000)) ms, recognise \(Int((t2 - t1) * 1000)) ms, lines \(lines.count)")
-        let words = Layout.readingWords(lines)
-        guard let i = Layout.hitTest(p, words: words) else { return nil }
+        let (words, starts) = Layout.readingWordsWithBlocks(lines)
+        guard let hit = Layout.hitTest(p, words: words) else { return nil }
+        let i = Layout.blockStart(of: hit, blockStarts: starts)   // read the whole section
         return (OCRProvider(), words[i...].map { ReadWord(text: $0.text, rect: $0.rect) })
     }
 

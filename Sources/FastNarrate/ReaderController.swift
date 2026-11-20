@@ -58,31 +58,50 @@ final class ReaderController: NSObject {
         if !follow { Trace.log("read at \(Int(p.x)),\(Int(p.y)) ax=\(perms.ax) sr=\(perms.sr) allowOCR=\(allowOCR)") }
         locator.locate(at: p, allowOCR: allowOCR) { [weak self] outcome in
             guard let self, lid == self.locateID else { return }
-            if !follow || { if case .found = outcome { return true }; return false }() {
-                Trace.log("locate → \(outcome.summary) in \(Int((CACurrentMediaTime() - self.t0) * 1000)) ms")
-            }
-            if self.state == .locating { self.state = .idle }
-            switch outcome {
-            case .found(let prov, let ws):
-                if prov is OCRProvider { self.lastOCRAt = CACurrentMediaTime() }
-                self.begin(prov, ws)
-            case .needsAccessibility:
-                guard !follow else { return }
-                let asked = perms.askedAX
-                perms.requestAXOnce()
-                self.hud.show(asked
-                    ? "Fast Narrate needs Accessibility permission. Open the menu bar icon → Grant Accessibility."
-                    : "Allow Fast Narrate in System Settings → Accessibility, then press ⌃⌥R again.", seconds: 5)
-            case .needsScreenRecording:
-                guard !follow else { return }
-                let asked = perms.askedSR
-                perms.requestSROnce()
-                self.hud.show(asked
-                    ? "This text isn't readable directly. Screen Recording (menu bar icon) lets Fast Narrate read images and PDFs."
-                    : "To read images and PDFs, allow Screen Recording in System Settings, then restart Fast Narrate from its menu.", seconds: 5)
-            case .noText:
-                if !follow { self.hud.show("No text found under the pointer") }
-            }
+            self.handle(outcome, follow: follow, noTextMessage: "No text found under the pointer")
+        }
+    }
+
+    /// Reads text the user selected (from the right-click Services menu), highlighting it in place.
+    func readSelection(_ text: String) {
+        let p = NSEvent.mouseLocation
+        t0 = CACurrentMediaTime()
+        if state == .idle { state = .locating }
+        locateID += 1
+        let lid = locateID
+        Trace.log("read selection (\(text.count) chars) ax=\(Permissions.shared.ax) sr=\(Permissions.shared.sr)")
+        locator.locateSelection(text, near: p) { [weak self] outcome in
+            guard let self, lid == self.locateID else { return }
+            self.handle(outcome, follow: false, noTextMessage: "Couldn't find the selected text on screen")
+        }
+    }
+
+    private func handle(_ outcome: LocateOutcome, follow: Bool, noTextMessage: String) {
+        let perms = Permissions.shared
+        if !follow || { if case .found = outcome { return true }; return false }() {
+            Trace.log("locate → \(outcome.summary) in \(Int((CACurrentMediaTime() - t0) * 1000)) ms")
+        }
+        if state == .locating { state = .idle }
+        switch outcome {
+        case .found(let prov, let ws):
+            if prov is OCRProvider { lastOCRAt = CACurrentMediaTime() }
+            begin(prov, ws)
+        case .needsAccessibility:
+            guard !follow else { return }
+            let asked = perms.askedAX
+            perms.requestAXOnce()
+            hud.show(asked
+                ? "Fast Narrate needs Accessibility permission. Open the menu bar icon → Grant Accessibility."
+                : "Allow Fast Narrate in System Settings → Accessibility, then press ⌃⌥R again.", seconds: 5)
+        case .needsScreenRecording:
+            guard !follow else { return }
+            let asked = perms.askedSR
+            perms.requestSROnce()
+            hud.show(asked
+                ? "This text isn't readable directly. Screen Recording (menu bar icon) lets Fast Narrate read images and PDFs."
+                : "To read images and PDFs, allow Screen Recording in System Settings, then restart Fast Narrate from its menu.", seconds: 5)
+        case .noText:
+            if !follow { hud.show(noTextMessage) }
         }
     }
 

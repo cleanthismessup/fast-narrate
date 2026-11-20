@@ -33,19 +33,47 @@ final class NativeTextProvider: WordProvider {
     private let text: NSString
     private let primaryHeight: CGFloat
     private var cursor: Int
+    private let end: Int
     private var produced = 0
     private let cap = 5000
 
-    var isExhausted: Bool { cursor >= text.length || produced >= cap }
+    var isExhausted: Bool { cursor >= end || produced >= cap }
 
-    private init(el: AXUIElement, text: NSString, start: Int, primaryHeight: CGFloat) {
+    private init(el: AXUIElement, text: NSString, start: Int, end: Int? = nil, primaryHeight: CGFloat) {
         self.el = el
         self.text = text
         self.cursor = start
+        self.end = min(end ?? text.length, text.length)
         self.primaryHeight = primaryHeight
     }
 
-    static func make(from hit: AXUIElement, at axPoint: CGPoint, primaryHeight: CGFloat) -> (NativeTextProvider, [ReadWord])? {
+    /// The selected text of a native text element.
+    static func selection(in el: AXUIElement, primaryHeight: CGFloat) -> (NativeTextProvider, [ReadWord])? {
+        guard AX.paramNames(el).contains(kAXBoundsForRangeParameterizedAttribute),
+              let s = AX.attr(el, kAXValueAttribute) as? String, !s.isEmpty,
+              let r = AX.range(AX.attr(el, kAXSelectedTextRangeAttribute)), r.length > 0 else { return nil }
+        let p = NativeTextProvider(el: el, text: s as NSString, start: r.location, end: r.location + r.length, primaryHeight: primaryHeight)
+        let first = p.fetchMore(max: 15)
+        return first.isEmpty ? nil : (p, first)
+    }
+
+    /// Start of the paragraph (or else the sentence) containing `loc`, if it's on screen.
+    private func sectionStart(containing loc: Int, visible: (CGRect) -> Bool) -> Int {
+        let para = text.paragraphRange(for: NSRange(location: loc, length: 0))
+        var sentence = para.location
+        text.enumerateSubstrings(in: para, options: [.bySentences, .substringNotRequired]) { _, r, _, stop in
+            if r.location <= loc { sentence = r.location } else { stop.pointee = true }
+        }
+        for c in [para.location, sentence] where c < loc {
+            if let t = Tokenizer.tokens(in: text, from: c, limit: 1).first, let r = rect(for: t.range), visible(r) {
+                return t.range.location
+            }
+        }
+        return loc
+    }
+
+    static func make(from hit: AXUIElement, at axPoint: CGPoint, primaryHeight: CGFloat,
+                     visible: @escaping (CGRect) -> Bool) -> (NativeTextProvider, [ReadWord])? {
         var el: AXUIElement? = hit
         for _ in 0..<4 {
             guard let cur = el else { break }
@@ -56,15 +84,17 @@ final class NativeTextProvider: WordProvider {
                let r = AX.range(AX.param(cur, kAXRangeForPositionParameterizedAttribute, AX.value(axPoint))),
                r.location >= 0, r.location < (s as NSString).length {
                 let ns = s as NSString
-                let start = Tokenizer.wordStart(in: ns, at: r.location)
+                let wordAt = Tokenizer.wordStart(in: ns, at: r.location)
+                let probe = NativeTextProvider(el: cur, text: ns, start: wordAt, primaryHeight: primaryHeight)
+                // Only accept if the word is really near the pointer (guards against odd elements).
+                if let t = Tokenizer.tokens(in: ns, from: wordAt, limit: 1).first, let r0 = probe.rect(for: t.range) {
+                    let pc = CGPoint(x: axPoint.x, y: primaryHeight - axPoint.y)
+                    guard r0.insetBy(dx: -r0.height * 4, dy: -r0.height * 1.5).contains(pc) else { return nil }
+                }
+                // Read the whole section, not from the exact word.
+                let start = probe.sectionStart(containing: wordAt, visible: visible)
                 let p = NativeTextProvider(el: cur, text: ns, start: start, primaryHeight: primaryHeight)
                 let first = p.fetchMore(max: 15)
-                // Only accept if the first word is really near the pointer (guards against odd elements).
-                if let r0 = first.first?.rect {
-                    let pc = CGPoint(x: axPoint.x, y: primaryHeight - axPoint.y)
-                    if r0.insetBy(dx: -r0.height * 4, dy: -r0.height * 1.5).contains(pc) { return (p, first) }
-                    return nil
-                }
                 return first.isEmpty ? nil : (p, first)
             }
             el = AX.parent(cur)
@@ -75,7 +105,8 @@ final class NativeTextProvider: WordProvider {
     func fetchMore(max: Int) -> [ReadWord] {
         guard !isExhausted else { return [] }
         let toks = Tokenizer.tokens(in: text, from: cursor, limit: min(max, cap - produced))
-        cursor = toks.count < max ? text.length : NSMaxRange(toks[toks.count - 1].range)
+            .filter { $0.range.location < end }
+        cursor = toks.count < max ? end : NSMaxRange(toks[toks.count - 1].range)
         produced += toks.count
         return toks.map { ReadWord(text: $0.text, rect: rect(for: $0.range), handle: NSValue(range: $0.range)) }
     }
@@ -106,17 +137,36 @@ final class WebTextProvider: WordProvider {
     private let primaryHeight: CGFloat
     private var produced = 0
     private var done = false
-    private let cap = 4000
+    private let cap: Int
 
     var isExhausted: Bool { done || produced >= cap }
 
-    private init(host: AXUIElement, cursor: CFTypeRef, primaryHeight: CGFloat) {
+    private init(host: AXUIElement, cursor: CFTypeRef, primaryHeight: CGFloat, maxWords: Int? = nil) {
         self.host = host
         self.cursor = cursor
         self.primaryHeight = primaryHeight
+        self.cap = maxWords ?? 4000
     }
 
-    static func make(from hit: AXUIElement, at axPoint: CGPoint, primaryHeight: CGFloat) -> (WebTextProvider, [ReadWord])? {
+    /// The selected text in a web view: starts at the selection and reads `words` words.
+    static func selection(from focused: AXUIElement, words: Int, primaryHeight: CGFloat) -> (WebTextProvider, [ReadWord])? {
+        var el: AXUIElement? = focused
+        for _ in 0..<14 {
+            guard let cur = el else { break }
+            if let r = AX.attr(cur, "AXSelectedTextMarkerRange"), let start = AX.rangeStart(r),
+               let end = AX.rangeEnd(r), !CFEqual(start, end) {
+                let p = WebTextProvider(host: cur, cursor: start, primaryHeight: primaryHeight, maxWords: max(1, words))
+                let first = p.fetchMore(max: 15)
+                v("selection: \(first.map(\.text))")
+                return first.isEmpty ? nil : (p, first)
+            }
+            el = AX.parent(cur)
+        }
+        return nil
+    }
+
+    static func make(from hit: AXUIElement, at axPoint: CGPoint, primaryHeight: CGFloat,
+                     visible: @escaping (CGRect) -> Bool) -> (WebTextProvider, [ReadWord])? {
         // The deepest element that speaks text markers, plus its ancestors up to the web area.
         var chain: [AXUIElement] = []
         var el: AXUIElement? = hit
@@ -129,12 +179,27 @@ final class WebTextProvider: WordProvider {
             el = AX.parent(cur)
         }
         guard let host = chain.first else { v("no text-marker host"); return nil }
-        let start = startMarker(chain: chain, at: axPoint)
-        guard let start else { v("no start marker"); return nil }
+        guard let wordAt = startMarker(chain: chain, at: axPoint) else { v("no start marker"); return nil }
+        let start = sectionStart(host: host, from: wordAt, primaryHeight: primaryHeight, visible: visible)
         let p = WebTextProvider(host: host, cursor: start, primaryHeight: primaryHeight)
         let first = p.fetchMore(max: 12)
         v("first words: \(first.map(\.text)) rects: \(first.prefix(3).map { $0.rect.map { "\($0.integral)" } ?? "nil" })")
         return first.isEmpty ? nil : (p, first)
+    }
+
+    /// Start of the paragraph (or else the sentence) around `m`, if it's on screen.
+    private static func sectionStart(host: AXUIElement, from m: CFTypeRef, primaryHeight: CGFloat,
+                                     visible: (CGRect) -> Bool) -> CFTypeRef {
+        for name in ["AXParagraphTextMarkerRangeForTextMarker", "AXSentenceTextMarkerRangeForTextMarker"] {
+            guard let r = AX.param(host, name, m), let s = AX.rangeStart(r), !CFEqual(s, m),
+                  let e = AX.param(host, "AXNextWordEndTextMarkerForTextMarker", s),
+                  let w = AX.param(host, "AXLeftWordTextMarkerRangeForTextMarker", e),
+                  let b = AX.rect(AX.param(host, "AXBoundsForTextMarkerRange", w)).flatMap({ AX.cocoa($0, primaryHeight: primaryHeight) }),
+                  plausible(b, chars: 20), visible(b) else { continue }
+            v("section start via \(name)")
+            return s
+        }
+        return m
     }
 
     /// Marker at the start of the word under the pointer. Safari answers AXTextMarkerForPosition;
@@ -323,10 +388,11 @@ final class TextLocator {
         let ax = Permissions.shared.ax
         let sr = Permissions.shared.sr
         let screen = Coords.screen(containing: p).map(ScreenInfo.init)
+        let visible = Self.visibility()
         let finish: (LocateOutcome) -> Void = { o in DispatchQueue.main.async { completion(o) } }
 
         queue.async {
-            if ax, let r = self.locateAX(p, primaryHeight: h) {
+            if ax, let r = self.locateAX(p, primaryHeight: h, visible: visible) {
                 finish(.found(r.0, r.1))
                 return
             }
@@ -339,16 +405,69 @@ final class TextLocator {
         }
     }
 
+    /// Screen-visibility test usable off the main thread.
+    private static func visibility() -> (CGRect) -> Bool {
+        let frames = NSScreen.screens.map(\.frame)
+        return { r in frames.contains { $0.insetBy(dx: 0, dy: 30).intersects(r) } }
+    }
+
+    /// Finds the user's selected text on screen so it can be highlighted where it is.
+    /// `text` is the selection (from the Services menu). `p` is where the pointer is (Cocoa).
+    func locateSelection(_ text: String, near p: CGPoint, completion: @escaping (LocateOutcome) -> Void) {
+        let h = Coords.primaryHeight
+        let ax = Permissions.shared.ax
+        let sr = Permissions.shared.sr
+        let screen = Coords.screen(containing: p).map(ScreenInfo.init)
+        let finish: (LocateOutcome) -> Void = { o in DispatchQueue.main.async { completion(o) } }
+        let ns = text as NSString
+        let tokens = Tokenizer.tokens(in: ns, from: 0, limit: 20000).map(\.text)
+        let wordCount = tokens.filter { $0.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) } }.count
+
+        queue.async {
+            if ax, let r = self.selectionAX(words: wordCount, primaryHeight: h) {
+                finish(.found(r.0, r.1))
+                return
+            }
+            guard sr else { finish(ax ? .needsScreenRecording : .needsAccessibility); return }
+            guard let screen, !tokens.isEmpty else { finish(.noText); return }
+            Task {
+                let all = await OCRLocator.scanScreen(screen)
+                let key = Array(tokens.prefix(6))
+                if let k = Reanchor.find(remaining: key, in: all.map(\.text)) {
+                    let slice = all[k..<min(all.count, k + max(1, tokens.count))]
+                    Trace.log("selection via OCR at word \(k), \(slice.count) words")
+                    finish(.found(OCRProvider(), slice.map { ReadWord(text: $0.text, rect: $0.rect) }))
+                } else {
+                    finish(.noText)
+                }
+            }
+        }
+    }
+
+    private func selectionAX(words: Int, primaryHeight h: CGFloat) -> (WordProvider, [ReadWord])? {
+        let sys = AXUIElementCreateSystemWide()
+        var focused = AX.attr(sys, kAXFocusedUIElementAttribute).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+        if focused == nil, let app = NSWorkspace.shared.frontmostApplication {
+            let a = AXUIElementCreateApplication(app.processIdentifier)
+            focused = AX.attr(a, kAXFocusedUIElementAttribute).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+        }
+        guard let el = focused else { Trace.log("selection: no focused element"); return nil }
+        Trace.log("selection: focused \(AX.attr(el, kAXRoleAttribute) as? String ?? "?") in pid \(AX.pid(el))")
+        if let r = NativeTextProvider.selection(in: el, primaryHeight: h) { return r }
+        if let r = WebTextProvider.selection(from: el, words: words, primaryHeight: h) { return r }
+        return nil
+    }
+
     /// `--ax-probe`: run the Accessibility lookup at a Cocoa point with full tracing.
     func probe(_ p: CGPoint) {
         WebTextProvider.verbose = true
         let t = CACurrentMediaTime()
-        let r = locateAX(p, primaryHeight: Coords.primaryHeight)
+        let r = locateAX(p, primaryHeight: Coords.primaryHeight, visible: Self.visibility())
         if let (prov, _) = r { Trace.log("probe next: " + prov.fetchMore(max: 40).map { "\($0.text)@\(Int($0.rect?.minX ?? -1)),\(Int($0.rect?.minY ?? -1))" }.joined(separator: " ")) }
         Trace.log("probe \(Int(p.x)),\(Int(p.y)) → \(r.map { LocateOutcome.found($0.0, $0.1).summary } ?? "nil") in \(Int((CACurrentMediaTime() - t) * 1000)) ms")
     }
 
-    private func locateAX(_ p: CGPoint, primaryHeight h: CGFloat) -> (WordProvider, [ReadWord])? {
+    private func locateAX(_ p: CGPoint, primaryHeight h: CGFloat, visible: @escaping (CGRect) -> Bool) -> (WordProvider, [ReadWord])? {
         let axp = CGPoint(x: p.x, y: h - p.y)
         guard let hit = AX.element(atAX: axp) else {
             Trace.log("AX: no element at \(Int(axp.x)),\(Int(axp.y))")
@@ -368,11 +487,11 @@ final class TextLocator {
             newlyEnabled = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
         }
 
-        if let r = NativeTextProvider.make(from: hit, at: axp, primaryHeight: h) { return r }
-        if let r = WebTextProvider.make(from: hit, at: axp, primaryHeight: h) { return r }
+        if let r = NativeTextProvider.make(from: hit, at: axp, primaryHeight: h, visible: visible) { return r }
+        if let r = WebTextProvider.make(from: hit, at: axp, primaryHeight: h, visible: visible) { return r }
         if newlyEnabled {
             usleep(200_000)
-            if let hit2 = AX.element(atAX: axp), let r = WebTextProvider.make(from: hit2, at: axp, primaryHeight: h) { return r }
+            if let hit2 = AX.element(atAX: axp), let r = WebTextProvider.make(from: hit2, at: axp, primaryHeight: h, visible: visible) { return r }
         }
         return nil
     }

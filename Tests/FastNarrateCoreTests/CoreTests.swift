@@ -146,4 +146,10 @@ final class LayoutTests: XCTestCase {
         for _ in 0..<120 { r.step(1.0 / 120) }
         XCTAssertTrue(r.isSettled)
     }
+
+    func testBlockStartFindsParagraphStart() {
+        XCTAssertEqual(Layout.blockStart(of: 7, blockStarts: [0, 5, 12]), 5)
+        XCTAssertEqual(Layout.blockStart(of: 12, blockStarts: [0, 5, 12]), 12)
+        XCTAssertEqual(Layout.blockStart(of: 3, blockStarts: [0, 5, 12]), 0)
+    }
 }

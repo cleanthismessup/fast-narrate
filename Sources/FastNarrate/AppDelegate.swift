@@ -44,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerHotkeys()
         updateIcon()
 
+        // Right-click → Services → "Read with Fast Narrate" (see NSServices in Info.plist).
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+
         OCREngine.warmUp(screens: NSScreen.screens.map(ScreenInfo.init))
         iconTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.updateIcon() }
         if Settings.shared.followMouse { follow.start() }
@@ -53,6 +57,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             reader.hud.show("Fast Narrate is in the menu bar. Point at text and press ⌃⌥R.", seconds: 5)
         }
         Trace.log("launched v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev") ax=\(p.ax) sr=\(p.sr) screens=\(NSScreen.screens.map { $0.frame })")
+    }
+
+    // MARK: Services
+
+    @objc func readSelection(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        guard let text = pboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            reader.hud.show("No text selected")
+            return
+        }
+        reader.stop()
+        reader.readSelection(text)
     }
 
     // MARK: Hotkeys
